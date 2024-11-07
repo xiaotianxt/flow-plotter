@@ -31,10 +31,11 @@ matplotlib.use("Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
+from matplotlib.widgets import RangeSlider
+
 from qgis.PyQt import QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
-from qgis.core import QgsMapLayerProxyModel, QgsVectorLayer, QgsProject, QgsMapLayer
-from qgis.gui import QgsMapLayerComboBox
+from qgis.core import QgsVectorLayer, QgsMapLayer, QgsFeature
 from qgis.utils import iface
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(os.path.dirname(__file__), "flow_plotter_dockwidget_base.ui"))
@@ -56,7 +57,6 @@ class FlowPlotterDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         iface.currentLayerChanged.connect(self.on_active_layer_changed)
         self.layer = iface.layerTreeView().selectedLayers()[0] if iface.layerTreeView().selectedLayers() else None
         self.on_active_layer_changed(self.layer)
-        print(self.layer)
 
     def init_plot(self):
         layout = self.verticalLayout  # Use the layout defined in the .ui file
@@ -84,24 +84,56 @@ class FlowPlotterDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.layer.selectionChanged.connect(self.on_selection_changed)
 
     def on_selection_changed(self, selections: List[int]):
-        if not len(selections):
+        if not len(selections) or not isinstance(self.layer, QgsVectorLayer):
             return
 
         print("[Feature]", selections[0])
         feature = self.layer.getFeature(selections[0])
+        if isinstance(feature, QgsFeature):
+            self.plot_feature_flow(feature)
+
+    def plot_feature_flow(self, feature: QgsFeature):
+        # 得到 feature 的所有 field
+        values = feature.attributes()
+        fields = feature.fields()
+
+        value_index = fields.indexFromName("s_s_4_9_0")
+        values = values[value_index:]
+        starts = values[: len(values) // 2]
+        ends = values[len(values) // 2 :]
 
         # 清除旧图
         self.static_canvas.figure.clear()
 
         # 创建新的子图
-        self._static_ax = self.static_canvas.figure.add_subplot(111)
+        self._static_ax = self.static_canvas.figure.add_subplot(211)
+        slider_ax = self.static_canvas.figure.add_subplot(212)
 
         # 绘制新图
-        import random
+        self._static_ax.plot(range(len(starts)), starts, label="Starts", linewidth=0.4)
+        self._static_ax.plot(range(len(ends)), ends, label="Ends", linewidth=0.4)
+        # 每 24 h 绘制一个条带，如果是周末那么就绘制红色，如果是周中绘制绿色
 
-        t = np.linspace(0, 10, random.randint(100, 200))
-        self._static_ax.plot(t, np.tan(t), ".")
-        self._static_ax.set_title("Tan plot")
+        for i in range(0, len(starts), 24):
+            if (i // 24) % 7 == 5 or (i // 24) % 7 == 6:
+                self._static_ax.axvspan(i, i + 24, color="red", alpha=0.2, linewidth=0.2)
+            else:
+                self._static_ax.axvspan(i, i + 24, color="green", alpha=0.2, linewidth=0.2)
+
+        self.range_slider = RangeSlider(slider_ax, "日期范围", 0, len(starts), valinit=(0, 7 * 24))
+
+        def update_range(_):
+            min_val, max_val = self.range_slider.val
+            self._static_ax.set_xlim(min_val, max_val)
+            self.static_canvas.draw_idle()
+
+        self.range_slider.on_changed(update_range)
+
+        # 让图像 focus 在前 7 天，而不是看所有数据
+        self._static_ax.set_xlim(0, 7 * 24)
+        self._static_ax.set_title("Flow")
+
+        self.static_canvas.figure.subplots_adjust(bottom=0.2)
 
         # 刷新画布
         self.static_canvas.draw()
