@@ -25,6 +25,7 @@
 import os
 import numpy as np
 import matplotlib
+from typing import List
 
 matplotlib.use("Agg")
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -32,8 +33,9 @@ from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as Navigatio
 from matplotlib.figure import Figure
 from qgis.PyQt import QtWidgets, uic
 from qgis.PyQt.QtCore import pyqtSignal
-from qgis.core import QgsMapLayerProxyModel, QgsFeature
-from qgis.gui import QgsMapLayerComboBox, QgsFeaturePickerWidget
+from qgis.core import QgsMapLayerProxyModel, QgsVectorLayer, QgsProject, QgsMapLayer
+from qgis.gui import QgsMapLayerComboBox
+from qgis.utils import iface
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(os.path.dirname(__file__), "flow_plotter_dockwidget_base.ui"))
 
@@ -51,45 +53,58 @@ class FlowPlotterDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # #widgets-and-dialogs-with-auto-connect
         self.setupUi(self)
         self.init_plot()
-        self.init_layer_selector()
-        self.init_feature_listener()
+        iface.currentLayerChanged.connect(self.on_active_layer_changed)
+        self.layer = iface.layerTreeView().selectedLayers()[0] if iface.layerTreeView().selectedLayers() else None
+        self.on_active_layer_changed(self.layer)
+        print(self.layer)
 
     def init_plot(self):
         layout = self.verticalLayout  # Use the layout defined in the .ui file
 
         static_canvas = FigureCanvas(Figure(figsize=(5, 3)))
+        self.static_canvas = static_canvas
         static_canvas.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         static_canvas.updateGeometry()
 
         layout.addWidget(NavigationToolbar(static_canvas, self))
         layout.addWidget(static_canvas)
 
-        self._static_ax = static_canvas.figure.subplots()
-        t = np.linspace(0, 10, 10)
+    def on_active_layer_changed(self, layer: QgsMapLayer):
+        # Only disconnect if we're connected
+        if isinstance(self.layer, QgsVectorLayer):
+            try:
+                while True:
+                    self.layer.disconnect(self.on_selection_changed)
+            except TypeError:
+                pass  # Ignore if not connected
+
+        if isinstance(layer, QgsVectorLayer):
+            print("[Layer]", layer.name())
+            self.layer = layer
+            self.layer.selectionChanged.connect(self.on_selection_changed)
+
+    def on_selection_changed(self, selections: List[int]):
+        if not len(selections):
+            return
+
+        print("[Feature]", selections[0])
+        feature = self.layer.getFeature(selections[0])
+
+        # 清除旧图
+        self.static_canvas.figure.clear()
+
+        # 创建新的子图
+        self._static_ax = self.static_canvas.figure.add_subplot(111)
+
+        # 绘制新图
+        import random
+
+        t = np.linspace(0, 10, random.randint(100, 200))
         self._static_ax.plot(t, np.tan(t), ".")
+        self._static_ax.set_title("Tan plot")
 
-    def init_layer_selector(self):
-        self.layer_selector = QgsMapLayerComboBox(self)
-        self.layer_selector.setFilters(QgsMapLayerProxyModel.VectorLayer)
-        self.verticalLayout.addWidget(self.layer_selector)
-
-    def init_feature_listener(self):
-        self.feature_picker = QgsFeaturePickerWidget(self)
-        self.feature_picker.setLayer(self.layer_selector.currentLayer())
-        self.verticalLayout.addWidget(self.feature_picker)
-
-        self.layer_selector.layerChanged.connect(self.on_layer_changed)
-        self.feature_picker.featureChanged.connect(self.on_feature_changed)
-
-    def on_layer_changed(self, layer):
-        self.feature_picker.setLayer(layer)
-
-    def on_feature_changed(self, feature: QgsFeature):
-        print(feature)
-        if feature and feature.isValid():
-            QtWidgets.QMessageBox.information(
-                self, "Feature Selected", f"Selected Feature ID: {feature.id()}\n" f"Attributes: {feature.attributes()}"
-            )
+        # 刷新画布
+        self.static_canvas.draw()
 
     def closeEvent(self, event):
         self.closingPlugin.emit()
